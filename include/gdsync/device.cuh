@@ -28,6 +28,7 @@
 #pragma once
 
 #include <gdsync.h> // for gds_poll_cond_flag_t
+#include <mlx5.h> 
 
 #ifdef  __cplusplus
 
@@ -78,6 +79,17 @@ namespace gdsync {
         __host__ __device__ isem64() : ptr(NULL), value(0) {}
     };
     typedef struct isem64 isem64_t;
+
+    typedef struct send_desc {
+        isem32_t dbrec;
+        isem64_t db;
+    } send_desc_t;
+
+    typedef struct wait_desc {
+        wait_cond_t sema_cond;
+        isem32_t sema;
+        isem32_t flag;
+    } wait_desc_t;
 
 #if defined(__CUDACC__)
     namespace device {
@@ -155,6 +167,15 @@ namespace gdsync {
             return ret;
         }
 
+        __device__ inline void send(send_desc_t &info) { 
+            release(info.dbrec);
+            __threadfence_system();
+            release(info.db);
+        }
+        
+        __device__ inline void wait(wait_desc_t &info) {
+            wait(info.sema, info.sema_cond);
+        }
     } // namespace device
 #endif
 

@@ -330,6 +330,36 @@ out:
 
 //-----------------------------------------------------------------------------
 
+void gds_mlx5_get_send_device_info(gds_mlx5_send_info_t* mlx5_sinfo, gdsync::send_desc_t *sinfo)
+{
+    assert (sinfo != NULL);
+    assert (mlx5_sinfo != NULL);
+
+    sinfo->dbrec.ptr   = mlx5_sinfo->dbrec_ptr;
+    sinfo->dbrec.value = mlx5_sinfo->dbrec_value;
+    sinfo->db.ptr      = mlx5_sinfo->db_ptr;
+    sinfo->db.value    = mlx5_sinfo->db_value;
+}
+
+//-----------------------------------------------------------------------------
+
+void gds_mlx5_get_wait_device_info(gds_mlx5_wait_info_t* mlx5_winfo, gdsync::wait_desc_t *sinfo)
+{
+    assert(winfo != NULL); 
+    assert(mlx5_winfo != NULL); 
+		    
+    winfo->sema_cond  = mlx5_winfo.cond;
+    winfo->sema.ptr   = mlx5_winfo.cqe_ptr;
+    winfo->sema.value = mlx5_winfo.cqe_value;
+    winfo->flag.ptr   = mlx5_winfo.flag_ptr;
+    winfo->flag.value = mlx5_winfo.flag_value;
+
+out:
+    return ret;
+}
+
+//-----------------------------------------------------------------------------
+
 /*
  * Local variables:
  *  c-indent-level: 8

@@ -611,7 +611,7 @@ out:
         NVTX_POP();
 }
 
-static int pp_post_work(struct pingpong_context *ctx, int n_posts, int rcnt, uint32_t qpn, int is_client)
+static int pp_post_work(struct pingpong_context *ctx, int n_posts, int rcnt, uint32_t qpn, int is_client, int async)
 {
         int retcode = 0;
 	int i, ret = 0;
@@ -642,87 +642,121 @@ static int pp_post_work(struct pingpong_context *ctx, int n_posts, int rcnt, uin
 
         NVTX_PUSH("post send+wait", 1);
 	for (i = 0; i < posted_recv; ++i) {
-                if (ctx->use_desc_apis) {
-                        work_desc_t *wdesc = calloc(1, sizeof(*wdesc));
-                        int k = 0;
-                        ret = pp_prepare_gpu_send(ctx, qpn, &wdesc->send_rq);
-                        if (ret) {
-                                retcode = -ret;
-                                break;
-                        }
-                        assert(k < N_WORK_DESCS);
-                        wdesc->descs[k].tag = GDS_TAG_SEND;
-                        wdesc->descs[k].send = &wdesc->send_rq;
-                        ++k;
+		if (ctx->async) { 
+                   if (ctx->use_desc_apis) {
+                           work_desc_t *wdesc = calloc(1, sizeof(*wdesc));
+                           int k = 0;
+                           ret = pp_prepare_gpu_send(ctx, qpn, &wdesc->send_rq);
+                           if (ret) {
+                                   retcode = -ret;
+                                   break;
+                           }
+                           assert(k < N_WORK_DESCS);
+                           wdesc->descs[k].tag = GDS_TAG_SEND;
+                           wdesc->descs[k].send = &wdesc->send_rq;
+                           ++k;
 
-                        ret = gds_prepare_wait_cq(&ctx->gds_qp->send_cq, &wdesc->wait_tx_rq, 0);
-                        if (ret) {
-                                retcode = -ret;
-                                break;
-                        }
-                        assert(k < N_WORK_DESCS);
-                        wdesc->descs[k].tag = GDS_TAG_WAIT;
-                        wdesc->descs[k].wait = &wdesc->wait_tx_rq;
-                        ++k;
+                           ret = gds_prepare_wait_cq(&ctx->gds_qp->send_cq, &wdesc->wait_tx_rq, 0);
+                           if (ret) {
+                                   retcode = -ret;
+                                   break;
+                           }
+                           assert(k < N_WORK_DESCS);
+                           wdesc->descs[k].tag = GDS_TAG_WAIT;
+                           wdesc->descs[k].wait = &wdesc->wait_tx_rq;
+                           ++k;
 
-                        ret = gds_prepare_wait_cq(&ctx->gds_qp->recv_cq, &wdesc->wait_rx_rq, 0);
-                        if (ret) {
-                                retcode = -ret;
-                                break;
-                        }
-                        assert(k < N_WORK_DESCS);
-                        wdesc->descs[k].tag = GDS_TAG_WAIT;
-                        wdesc->descs[k].wait = &wdesc->wait_rx_rq;
-                        ++k;
+                           ret = gds_prepare_wait_cq(&ctx->gds_qp->recv_cq, &wdesc->wait_rx_rq, 0);
+                           if (ret) {
+                                   retcode = -ret;
+                                   break;
+                           }
+                           assert(k < N_WORK_DESCS);
+                           wdesc->descs[k].tag = GDS_TAG_WAIT;
+                           wdesc->descs[k].wait = &wdesc->wait_rx_rq;
+                           ++k;
 
-                        if (ctx->peersync) {
-                                gpu_dbg("before gds_stream_post_descriptors\n");
-                                ret = gds_stream_post_descriptors(gpu_stream_server, k, wdesc->descs, 0);
-                                gpu_dbg("after gds_stream_post_descriptors\n");
-                                free(wdesc);
-                                if (ret) {
-                                        retcode = -ret;
-                                        break;
-                                }
-                        } else {
-                                gpu_dbg("adding post_work_cb to stream=%p\n", gpu_stream_server);
-                                CUCHECK(cuStreamAddCallback(gpu_stream_server, post_work_cb, wdesc, 0));
-                        }
-                } else if (ctx->peersync) {
-                        ret = pp_post_gpu_send(ctx, qpn, &gpu_stream_server);
-                        if (ret) {
-                                gpu_err("error %d in pp_post_gpu_send, posted_recv=%d posted_so_far=%d is_client=%d \n",
-                                        ret, posted_recv, i, is_client);
-                                retcode = -ret;
-                                break;
-                        }
+                           if (ctx->peersync) {
+                                   gpu_dbg("before gds_stream_post_descriptors\n");
+                                   ret = gds_stream_post_descriptors(gpu_stream_server, k, wdesc->descs, 0);
+                                   gpu_dbg("after gds_stream_post_descriptors\n");
+                                   free(wdesc);
+                                   if (ret) {
+                                           retcode = -ret;
+                                           break;
+                                   }
+                           } else {
+                                   gpu_dbg("adding post_work_cb to stream=%p\n", gpu_stream_server);
+                                   CUCHECK(cuStreamAddCallback(gpu_stream_server, post_work_cb, wdesc, 0));
+                           }
+                   } else if (ctx->peersync) {
+                           ret = pp_post_gpu_send(ctx, qpn, &gpu_stream_server);
+                           if (ret) {
+                                   gpu_err("error %d in pp_post_gpu_send, posted_recv=%d posted_so_far=%d is_client=%d \n",
+                                           ret, posted_recv, i, is_client);
+                                   retcode = -ret;
+                                   break;
+                           }
 
-                        ret = gds_stream_wait_cq(gpu_stream_server, &ctx->gds_qp->send_cq, 0);
-                        if (ret) {
-                                // TODO: rollback gpu send
-                                gpu_err("error %d in gds_stream_wait_cq\n", ret);
-                                retcode = -ret;
-                                break;
-                        }
+                           ret = gds_stream_wait_cq(gpu_stream_server, &ctx->gds_qp->send_cq, 0);
+                           if (ret) {
+                                   // TODO: rollback gpu send
+                                   gpu_err("error %d in gds_stream_wait_cq\n", ret);
+                                   retcode = -ret;
+                                   break;
+                           }
 
-                        ret = gds_stream_wait_cq(gpu_stream_server, &ctx->gds_qp->recv_cq, ctx->consume_rx_cqe);
-                        if (ret) {
-                                // TODO: rollback gpu send and wait send_cq
-                                gpu_err("error %d in gds_stream_wait_cq\n", ret);
-                                //exit(EXIT_FAILURE);
-                                retcode = -ret;
-                                break;
-                        }
-                } else {
-                        gpu_err("!peersync case only supported when using descriptor APIs\n");
-                        retcode = -EINVAL;
-                        break;
-                }
+                           ret = gds_stream_wait_cq(gpu_stream_server, &ctx->gds_qp->recv_cq, ctx->consume_rx_cqe);
+                           if (ret) {
+                                   // TODO: rollback gpu send and wait send_cq
+                                   gpu_err("error %d in gds_stream_wait_cq\n", ret);
+                                   //exit(EXIT_FAILURE);
+                                   retcode = -ret;
+                                   break;
+                           }
+                   } else {
+                           gpu_err("!peersync case only supported when using descriptor APIs\n");
+                           retcode = -EINVAL;
+                           break;
+                   }
+		} else {
+		   int ne;
+                   struct ibv_wc wc;
+
+                   ret = pp_post_send(ctx, qpn);
+                   if (ret) {
+                           gpu_err("error %d in pp_post_send \n",
+                                   ret);
+                           retcode = -ret;
+                           break;
+                   }
+
+		   ne = 0;
+		   do { 
+                       ne = ibv_poll_cq(ctx->rx_cq, 1, &wc);
+		   } while (!ne);
+                   if (ne < 0) {
+                           fprintf(stderr, "poll RX CQ failed %d\n", ne);
+                           return 1;
+                   }
+
+		   ne = 0;
+		   do { 
+                       ne = ibv_poll_cq(ctx->tx_cq, 1, &wc);
+		   } while (!ne);
+                   if (ne < 0) {
+                           fprintf(stderr, "poll RX CQ failed %d\n", ne);
+                           return 1;
+                   }
+		}
+
 		if (ctx->skip_kernel_launch) {
                         gpu_warn_once("NOT LAUNCHING ANY KERNEL AT ALL\n");
                 } else {
 			gpu_launch_kernel_on_stream(ctx->calc_size, ctx->peersync, gpu_stream_server);
                 }
+
+		if (!ctx->async) cuStreamSynchronize(gpu_stream_server);
 
         }
         PROF(&prof, prof_idx++);
@@ -754,6 +788,7 @@ static void usage(const char *argv0)
 	printf("  -S, --gpu-calc-size=<size>  size of GPU compute buffer (default 128KB)\n");
 	printf("  -G, --gpu-id           use specified GPU (default 0)\n");
 	printf("  -B, --batch-length=<n> max batch length (default 20)\n");
+	printf("  -A, --async               use on-stream communication (default enabled) \n");
 	printf("  -P, --peersync            disable GPUDirect PeerSync support (default enabled)\n");
 	printf("  -C, --peersync-gpu-cq     enable GPUDirect PeerSync GPU CQ support (default disabled)\n");
 	printf("  -D, --peersync-gpu-dbrec  enable QP DBREC on GPU memory (default disabled)\n");
@@ -834,6 +869,7 @@ int main(int argc, char *argv[])
 			{ .name = "events",   .has_arg = 0, .val = 'e' },
 			{ .name = "gid-idx",  .has_arg = 1, .val = 'g' },
 			{ .name = "gpu-id",          .has_arg = 1, .val = 'G' },
+			{ .name = "async",        .has_arg = 0, .val = 'A' },
 			{ .name = "peersync",        .has_arg = 0, .val = 'P' },
 			{ .name = "peersync-gpu-cq", .has_arg = 0, .val = 'C' },
 			{ .name = "peersync-gpu-dbrec", .has_arg = 1, .val = 'D' },
@@ -849,7 +885,7 @@ int main(int argc, char *argv[])
 			{ 0 }
 		};
 
-		c = getopt_long(argc, argv, "p:d:i:s:r:n:l:eg:G:S:B:PCDQM:W:EUKL", long_options, NULL);
+		c = getopt_long(argc, argv, "p:d:i:s:r:n:l:eg:G:S:B:APCDQM:W:EUKL", long_options, NULL);
 		if (c == -1)
 			break;
 
@@ -915,6 +951,15 @@ int main(int argc, char *argv[])
 			max_batch_len = strtol(optarg, NULL, 0);
                         printf("INFO: max_batch_len=%d\n", max_batch_len);
 			break;
+
+		case 'A':
+			async = !async;
+                        printf("INFO: switching Async %s\n", async?"ON":"OFF");
+                        if (!async) {
+                                printf("WARNING: Async is OFF, synchronizing between comp and comms \n");
+                        }
+			break;
+
 
 		case 'P':
 			peersync = !peersync;
@@ -1100,7 +1145,7 @@ int main(int argc, char *argv[])
                 //sleep(1);
         }
 
-        if (hide_cpu_launch_latency) {
+        if (async && hide_cpu_launch_latency) {
                 printf("INFO: blocking stream ...\n");
                 block_server_stream(ctx);
         }
@@ -1133,7 +1178,7 @@ int main(int argc, char *argv[])
 
                 n_post = min(min(ctx->rx_depth/2, iters-nposted), max_batch_len);
                 gpu_dbg("batch=%d n_post=%d\n", batch, n_post);
-                n_posted = pp_post_work(ctx, n_post, 0, rem_dest->qpn, servername?1:0);
+                n_posted = pp_post_work(ctx, n_post, 0, rem_dest->qpn, servername?1:0, async);
                 PROF(&prof, prof_idx++);
                 if (n_posted < 0) {
                         fprintf(stderr, "ERROR: got error %d\n", n_posted);
@@ -1168,7 +1213,7 @@ int main(int argc, char *argv[])
                 pre_post_us = usec;
 	}
 
-        if (hide_cpu_launch_latency) {
+        if (async && hide_cpu_launch_latency) {
                 printf("ignoring pre-posting time and unblocking the stream\n");
                 pre_post_us = 0;
                 if (unblock_server_stream(ctx)) {
@@ -1199,6 +1244,7 @@ int main(int argc, char *argv[])
                 ++iter;
                 PROF(&prof, prof_idx++);
 
+		if (async) { 
                 //printf("before tracking\n"); fflush(stdout);
                 int ret = gpu_wait_tracking_event(1000*1000);
                 if (ret == ENOMEM) {
@@ -1212,12 +1258,13 @@ int main(int argc, char *argv[])
                         got_error = ret;
                 }
                 //gpu_infoc(20, "after tracking\n");
+		}
 
                 PROF(&prof, prof_idx++);
 
                 // don't call poll_cq on events which are still being polled by the GPU
                 int n_rx_ev = 0;
-                if (!ctx->consume_rx_cqe) {
+                if (async && !ctx->consume_rx_cqe) {
                         struct ibv_wc wc[max_batch_len];
                         int ne = 0, i;
 
@@ -1252,43 +1299,50 @@ int main(int argc, char *argv[])
                 }
 
                 PROF(&prof, prof_idx++);
+
                 int n_tx_ev = 0;
-                {
-                        struct ibv_wc wc[max_batch_len];
-                        int ne, i;
+		if (async) { 
+                    {
+                            struct ibv_wc wc[max_batch_len];
+                            int ne, i;
 
-                        ne = ibv_poll_cq(ctx->tx_cq, max_batch_len, wc);
-                        if (ne < 0) {
-                                fprintf(stderr, "poll TX CQ failed %d\n", ne);
-                                return 1;
-                        }
-                        n_tx_ev += ne;
-                        for (i = 0; i < ne; ++i) {
-                                if (wc[i].status != IBV_WC_SUCCESS) {
-                                        fprintf(stderr, "Failed status %s (%d) for wr_id %d\n",
-                                                ibv_wc_status_str(wc[i].status),
-                                                wc[i].status, (int) wc[i].wr_id);
-                                        return 1;
-                                }
+                            ne = ibv_poll_cq(ctx->tx_cq, max_batch_len, wc);
+                            if (ne < 0) {
+                                    fprintf(stderr, "poll TX CQ failed %d\n", ne);
+                                    return 1;
+                            }
+                            n_tx_ev += ne;
+                            for (i = 0; i < ne; ++i) {
+                                    if (wc[i].status != IBV_WC_SUCCESS) {
+                                            fprintf(stderr, "Failed status %s (%d) for wr_id %d\n",
+                                                    ibv_wc_status_str(wc[i].status),
+                                                    wc[i].status, (int) wc[i].wr_id);
+                                            return 1;
+                                    }
 
-                                switch ((int) wc[i].wr_id) {
-                                case PINGPONG_SEND_WRID:
-                                        ++scnt;
-                                        break;
-                                default:
-                                        fprintf(stderr, "Completion for unknown wr_id %d\n",
-                                                (int) wc[i].wr_id);
-                                        ret = 1;
-                                        goto out;
-                                }
-                        }
+                                    switch ((int) wc[i].wr_id) {
+                                    case PINGPONG_SEND_WRID:
+                                            ++scnt;
+                                            break;
+                                    default:
+                                            fprintf(stderr, "Completion for unknown wr_id %d\n",
+                                                    (int) wc[i].wr_id);
+                                            ret = 1;
+                                            goto out;
+                                    }
+                            }
+                    }
+		} else {
+                        n_tx_ev = last_batch_len;
+                        scnt += last_batch_len;
                 }
 
                 PROF(&prof, prof_idx++);
                 if (1 && (n_tx_ev || n_rx_ev)) {
                         //fprintf(stderr, "iter=%d n_rx_ev=%d, n_tx_ev=%d\n", iter, n_rx_ev, n_tx_ev); fflush(stdout);
                 }
-                if (n_tx_ev || n_rx_ev) {
+
+		if (n_tx_ev || n_rx_ev) {
                         // update counters
                         routs -= last_batch_len;
                         //prev_batch_len = last_batch_len;
@@ -1300,7 +1354,7 @@ int main(int argc, char *argv[])
                                 //fprintf(stdout, "rcnt=%d scnt=%d routs=%d nposted=%d\n", rcnt, scnt, routs, nposted); fflush(stdout);
                                 // potentially submit new work
                                 n_post = min(min(ctx->rx_depth/2, iters-nposted), max_batch_len);
-                                int n = pp_post_work(ctx, n_post, nposted, rem_dest->qpn, servername?1:0);
+                                int n = pp_post_work(ctx, n_post, nposted, rem_dest->qpn, servername?1:0, async);
                                 if (n != n_post) {
                                         fprintf(stderr, "ERROR: post_work error (%d) rcnt=%d n_post=%d routs=%d\n", n, rcnt, n_post, routs);
                                         return 1;
@@ -1314,6 +1368,7 @@ int main(int argc, char *argv[])
                         PROF(&prof, prof_idx++);
                         PROF(&prof, prof_idx++);
                 }
+
                 //usleep(10);
                 PROF(&prof, prof_idx++);
 		prof_update(&prof);

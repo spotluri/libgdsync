@@ -61,4 +61,8 @@ typedef struct gds_mlx5_wait_info {
 
 int gds_mlx5_get_wait_info(int count, const gds_wait_request_t *requests, gds_mlx5_wait_info_t *mlx5_infos);
 
+int gds_mlx5_get_send_device_info(gds_mlx5_send_info_t* mlx5_sinfo, gdsync::send_desc_t *sinfo);
+
+int gds_mlx5_get_wait_device_info(gds_mlx5_wait_info_t* mlx5_winfo, gdsync::wait_desc_t *winfo);
+
 GDS_END_DECLS
